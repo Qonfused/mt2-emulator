@@ -26,9 +26,9 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - macos-13   # Ventura, Intel
-          - macos-14   # Sonoma, Apple Silicon
-          - macos-15   # Sequoia, Apple Silicon
+          - macos-14      # Sonoma, Apple Silicon
+          - macos-15      # Sequoia, Apple Silicon
+          - macos-latest  # whatever GitHub currently aliases (today: macos-15)
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }}
     steps:

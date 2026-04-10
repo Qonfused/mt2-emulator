@@ -16,12 +16,25 @@
 // processes on this version.
 
 #include <CoreFoundation/CoreFoundation.h>
-#include <IOKit/hid/IOHIDUserDevice.h>
 #include <IOKit/hid/IOHIDKeys.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+// IOHIDUserDevice.h is not in the public macOS SDK; it lives in
+// apple-oss-distributions/IOKitUser/hid.subproj/IOHIDUserDevice.h. The
+// functions are exported from IOKit.framework's binary, so we just
+// forward-declare the symbols we need and let the linker resolve them.
+typedef struct __IOHIDUserDevice * IOHIDUserDeviceRef;
+
+extern IOHIDUserDeviceRef IOHIDUserDeviceCreate(
+    CFAllocatorRef allocator,
+    CFDictionaryRef properties);
+
+// kIOHIDVirtualHIDevice lives in IOHIDPrivateKeys.h (also not in the
+// public SDK). The string value is stable across versions.
+#define kIOHIDVirtualHIDevice "VirtualHIDevice"
 
 // Minimal generic mouse HID descriptor (52 bytes, well-formed, no Apple
 // magic). Using this isolates the entitlement check from any "is this
