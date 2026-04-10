@@ -83,6 +83,40 @@ jobs:
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
           exit $rc
 
+      - name: Re-sign test_iohid ad-hoc with self-claimed entitlement
+        working-directory: .github
+        run: |
+          cat > entitlements.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.developer.hid.virtual.device</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+          echo "=== entitlements.plist ==="
+          cat entitlements.plist
+          echo
+          codesign --sign - --entitlements entitlements.plist --force test_iohid
+          echo "=== codesign -dv (post-sign) ==="
+          codesign -dv test_iohid 2>&1 || true
+          echo
+          echo "=== embedded entitlements (what AMFI will see in the signature blob) ==="
+          codesign -d --entitlements - test_iohid 2>&1 || true
+
+      - name: Run test_iohid (ad-hoc signed, self-claimed entitlement)
+        id: run_signed
+        working-directory: .github
+        continue-on-error: true
+        run: |
+          set +e
+          ./test_iohid
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
+
       - name: Dump system log for test_iohid
         if: always()
         run: |
@@ -94,8 +128,11 @@ jobs:
           echo
           echo "=== log show --info --debug eventMessage CONTAINS 'is not entitled' (last 5m) ==="
           log show --info --debug --predicate 'eventMessage CONTAINS "is not entitled"' --last 5m || true
+          echo
+          echo "=== AMFI messages (last 5m) ==="
+          log show --info --debug --predicate 'subsystem == "com.apple.AppleMobileFileIntegrity" OR eventMessage CONTAINS "AMFI"' --last 5m || true
 
-      - name: Summary
+      - name: Summary and overall pass/fail
         if: always()
         run: |
           echo "============================================================"
@@ -103,6 +140,25 @@ jobs:
           echo "Architecture: $(uname -m)"
           echo "Runner:       ${{ matrix.os }}"
           echo
-          echo "Test as user:  outcome=${{ steps.run_user.outcome }} exit=${{ steps.run_user.outputs.exit_code }}"
-          echo "Test as root:  outcome=${{ steps.run_root.outcome }} exit=${{ steps.run_root.outputs.exit_code }}"
+          echo "Variant 1 — unsigned, normal user:"
+          echo "  outcome=${{ steps.run_user.outcome }} exit=${{ steps.run_user.outputs.exit_code }}"
+          echo "Variant 2 — unsigned, sudo:"
+          echo "  outcome=${{ steps.run_root.outcome }} exit=${{ steps.run_root.outputs.exit_code }}"
+          echo "Variant 3 — ad-hoc signed with self-claimed entitlement, normal user:"
+          echo "  outcome=${{ steps.run_signed.outcome }} exit=${{ steps.run_signed.outputs.exit_code }}"
           echo "============================================================"
+
+          # Fail the job if any test variant failed. Each test exits non-zero
+          # when IOHIDUserDeviceCreate returns NULL (i.e. the entitlement
+          # gate is enforced for that variant). The CI status then becomes
+          # the regression signal: red = wall is up, green = wall is open.
+          fail=0
+          if [[ "${{ steps.run_user.outcome }}"   != "success" ]]; then fail=1; fi
+          if [[ "${{ steps.run_root.outcome }}"   != "success" ]]; then fail=1; fi
+          if [[ "${{ steps.run_signed.outcome }}" != "success" ]]; then fail=1; fi
+
+          if [[ $fail -ne 0 ]]; then
+            echo "::error::At least one test_iohid variant failed — IOHIDUserDeviceCreate is gated on this runner"
+            exit 1
+          fi
+          echo "::notice::All test_iohid variants succeeded — IOHIDUserDeviceCreate is open on this runner"
