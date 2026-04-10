@@ -1,0 +1,108 @@
+name: test_iohid entitlement probe
+
+# Probes whether IOHIDUserDeviceCreate succeeds for an unentitled,
+# unsigned userspace binary across the macOS versions GitHub Actions
+# offers. We expect failure on current macOS (per the kernel source in
+# IOHIDResourceUserClient::initWithTask) but want empirical confirmation
+# and the exact failure-mode logs across versions, so we can pin down
+# when the entitlement gate was added.
+#
+# The test program lives at .github/test_iohid.c.
+
+on:
+  push:
+    paths:
+      - '.github/test_iohid.c'
+      - '.github/workflows/test_iohid_matrix.yml'
+  pull_request:
+    paths:
+      - '.github/test_iohid.c'
+      - '.github/workflows/test_iohid_matrix.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-13   # Ventura, Intel
+          - macos-14   # Sonoma, Apple Silicon
+          - macos-15   # Sequoia, Apple Silicon
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner info
+        run: |
+          echo "=== sw_vers ==="
+          sw_vers
+          echo
+          echo "=== uname ==="
+          uname -a
+          echo
+          echo "=== SIP / boot-args (informational) ==="
+          csrutil status || true
+          nvram boot-args 2>/dev/null || echo "boot-args: (unset)"
+          echo
+          echo "=== xcode-select ==="
+          xcode-select -p
+          clang --version
+
+      - name: Build test_iohid (unsigned, no entitlement)
+        working-directory: .github
+        run: |
+          clang -framework IOKit \
+                -framework CoreFoundation \
+                test_iohid.c -o test_iohid
+          ls -la test_iohid
+          echo
+          echo "=== codesign status (expect: not signed / adhoc) ==="
+          codesign -dv test_iohid 2>&1 || true
+
+      - name: Run test_iohid as normal user
+        id: run_user
+        working-directory: .github
+        continue-on-error: true
+        run: |
+          set +e
+          ./test_iohid
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Run test_iohid as root (sudo)
+        id: run_root
+        working-directory: .github
+        continue-on-error: true
+        run: |
+          set +e
+          sudo ./test_iohid
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Dump system log for test_iohid
+        if: always()
+        run: |
+          echo "=== log show --predicate 'process == \"test_iohid\"' --last 5m ==="
+          log show --predicate 'process == "test_iohid"' --last 5m || true
+          echo
+          echo "=== log show --info --debug eventMessage CONTAINS test_iohid (last 5m) ==="
+          log show --info --debug --predicate 'eventMessage CONTAINS "test_iohid"' --last 5m || true
+          echo
+          echo "=== log show --info --debug eventMessage CONTAINS 'is not entitled' (last 5m) ==="
+          log show --info --debug --predicate 'eventMessage CONTAINS "is not entitled"' --last 5m || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "============================================================"
+          echo "macOS:        $(sw_vers -productVersion)"
+          echo "Architecture: $(uname -m)"
+          echo "Runner:       ${{ matrix.os }}"
+          echo
+          echo "Test as user:  outcome=${{ steps.run_user.outcome }} exit=${{ steps.run_user.outputs.exit_code }}"
+          echo "Test as root:  outcome=${{ steps.run_root.outcome }} exit=${{ steps.run_root.outputs.exit_code }}"
+          echo "============================================================"
